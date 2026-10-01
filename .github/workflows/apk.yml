@@ -1,0 +1,69 @@
+name: Android APK
+on:
+  workflow_dispatch:
+    inputs:
+      api_url:
+        description: API base URL baked into the app bundle
+        required: false
+        default: https://3000-iwtk4rkzgle8q29oxkni7.e2b.app
+  push:
+    tags: ["v*"]
+permissions:
+  contents: read
+concurrency:
+  group: apk-${{ github.ref }}
+  cancel-in-progress: true
+jobs:
+  apk:
+    runs-on: ubuntu-latest
+    timeout-minutes: 40
+    # Tag builds attach the APK to a GitHub Release.
+    permissions:
+      contents: write
+    env:
+      CI: "true"
+      # Expo inlines EXPO_PUBLIC_* into the JS bundle while Gradle runs Metro,
+      # so the API address of the target server is fixed at build time.
+      EXPO_PUBLIC_API_URL: ${{ github.event.inputs.api_url || vars.EXPO_PUBLIC_API_URL || 'https://3000-iwtk4rkzgle8q29oxkni7.e2b.app' }}
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
+        with:
+          node-version: 24
+      - uses: pnpm/action-setup@f40ffcd9367d9f12939873eb1018b921a783ffaa # v4
+      - uses: actions/setup-java@b6effb05e454b25005698d916606bdc6ffcbf961 # v5
+        with:
+          distribution: temurin
+          java-version: "17"
+      - run: pnpm install --frozen-lockfile
+      # Generates apps/mobile/android from app.json and its config plugins.
+      # --no-install keeps prebuild from running npm inside the pnpm workspace.
+      - name: Generate the Android project
+        run: pnpm --dir apps/mobile exec expo prebuild --platform android --no-install
+      - uses: gradle/actions/setup-gradle@ed408507eac070d1f99cc633dbcf757c94c7933a # v4
+      - name: Assemble the release APK
+        working-directory: apps/mobile/android
+        # The Expo template signs release builds with the debug keystore, so the
+        # APK installs on devices without any signing secrets.
+        run: ./gradlew assembleRelease --no-daemon
+      - name: Name the APK
+        run: |
+          version="$(node -p "require('./apps/mobile/app.json').expo.version")"
+          cp apps/mobile/android/app/build/outputs/apk/release/app-release.apk "openmuse-$version.apk"
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: openmuse-apk
+          path: openmuse-*.apk
+          if-no-files-found: error
+      - name: Attach the APK to the release
+        if: startsWith(github.ref, 'refs/tags/')
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          if gh release view "$GITHUB_REF_NAME" >/dev/null 2>&1; then
+            gh release upload "$GITHUB_REF_NAME" openmuse-*.apk --clobber
+          else
+            gh release create "$GITHUB_REF_NAME" openmuse-*.apk --generate-notes --verify-tag
+          fi

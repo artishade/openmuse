@@ -36,6 +36,13 @@ pnpm --dir apps/mobile build:android
 
 The `build:ios` and `build:android` commands validate and export platform JavaScript/Hermes bundles. They do not create signed installable apps. `ios` and `android` run Expo’s native development-build workflows and need the platform toolchains.
 
+## Downloadable APK
+
+[Android APK](../../actions/workflows/apk.yml) builds an installable APK on GitHub Actions: `expo prebuild` generates the Android project from `app.json`, Gradle assembles `assembleRelease` (signed with the debug keystore, so no signing secrets are needed), and the run uploads `openmuse-<version>.apk` as a downloadable artifact.
+
+- Run it manually from the Actions tab with an optional **api_url** input — the API base URL baked into the bundle. It defaults to the current preview server; set the `EXPO_PUBLIC_API_URL` repository variable (or push a `v*` tag) to point builds elsewhere.
+- Pushing a `v*` tag also attaches the APK to the GitHub Release for that tag.
+
 ## Behavior
 
 - Chat, Activity, Ideas, Goals and Apps are the primary navigation. Tasks, timelines and notifications refresh from the durable server state. Apps contains Mail, Calendar, Browser, Files and Connections.
