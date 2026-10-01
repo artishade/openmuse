@@ -4,6 +4,7 @@ import {
   type AgentsFactory,
   type CopilotKitIntelligence,
   CopilotRuntime,
+  CopilotSseRuntime,
   createCopilotHonoHandler,
 } from "@copilotkit/runtime/v2";
 import type { Auth } from "./auth.ts";
@@ -29,7 +30,7 @@ export function makeRuntime(
   config: Config,
   service: AgentService,
   auth: Auth,
-  intelligence: CopilotKitIntelligence,
+  intelligence?: CopilotKitIntelligence,
 ) {
   // Built on first use, then shared so live mode reuses one TypeSafe client across requests.
   let jevAdapter: JevAdapter | undefined;
@@ -55,14 +56,21 @@ export function makeRuntime(
               sharedJevAdapter(),
             ),
   });
-  const runtime = new CopilotRuntime({
-    agents,
+  // With Intelligence the runtime persists threads in CopilotKit cloud; without a key
+  // the SSE runtime runs agents in-process and the app falls back to local storage.
+  const runtime = intelligence
+    ? new CopilotRuntime({
+        agents,
+        intelligence,
+        identifyUser: async (request) => ({
+          id: await auth.owner(request.headers.get("authorization") ?? undefined),
+          name: "OpenMuse user",
+        }),
+        generateThreadNames: false,
+      })
+    : new CopilotSseRuntime({ agents });
+  return {
+    handler: createCopilotHonoHandler({ runtime, basePath: "/api/copilotkit" }),
     intelligence,
-    identifyUser: async (request) => ({
-      id: await auth.owner(request.headers.get("authorization") ?? undefined),
-      name: "OpenMuse user",
-    }),
-    generateThreadNames: false,
-  });
-  return createCopilotHonoHandler({ runtime, basePath: "/api/copilotkit" });
+  };
 }

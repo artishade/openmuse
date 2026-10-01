@@ -26,7 +26,12 @@ export class WorkspaceService {
     private readonly config: Config,
     private readonly files: Files,
     private readonly googleAuth: GoogleAuth,
+    private readonly options: { intelligenceConfigured?: () => boolean } = {},
   ) {}
+  /** Rich Threads need CopilotKit Intelligence; the key can come from env or the in-app setup. */
+  private intelligenceConfigured(): boolean {
+    return this.options.intelligenceConfigured?.() ?? Boolean(this.config.intelligenceApiKey);
+  }
   google(owner: string, connectionId?: string) {
     return new GoogleClient({
       getAccessToken: () => this.googleAuth.accessToken(owner, connectionId),
@@ -323,7 +328,8 @@ export class WorkspaceService {
         provider: this.config.agentBackend === "sample" ? "sample" : "model",
         configured: agentConfigured(this.config),
         openbotConfigured: false,
-        richThreads: true,
+        richThreads: this.intelligenceConfigured(),
+        intelligenceConfigured: this.intelligenceConfigured(),
       },
     };
   }

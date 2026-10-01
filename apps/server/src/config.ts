@@ -127,7 +127,7 @@ export function readConfig(): Config {
     agentBackend: backend,
     agentUrl: process.env.AGENT_URL,
     agentToken: process.env.AGENT_TOKEN,
-    intelligenceApiKey: required("CPK_INTELLIGENCE_API_KEY", intelligenceKeyRequiredMessage),
+    intelligenceApiKey: process.env.CPK_INTELLIGENCE_API_KEY?.trim() || undefined,
     googleClientId: process.env.GOOGLE_CLIENT_ID,
     googleClientSecret: process.env.GOOGLE_CLIENT_SECRET,
     googleRedirectUri: `${publicUrl}/api/google/callback`,

@@ -12,7 +12,7 @@ import { createAuth } from "./auth.ts";
 import { BrowserService } from "./browser.ts";
 import { ComputerService, type DockerRunner } from "./computer.ts";
 import { computerRoutes } from "./computer-routes.ts";
-import { assertApiDeploymentConfig, type Config } from "./config.ts";
+import type { Config } from "./config.ts";
 import type { Store } from "./db.ts";
 import { agentRoutes } from "./engine/routes.ts";
 import { AgentService } from "./engine/service.ts";
@@ -26,11 +26,17 @@ export async function createApp(
   config: Config,
   options: { docker?: DockerRunner } = {},
 ) {
-  assertApiDeploymentConfig(config);
+  // The Intelligence key can also be set later from the app (POST /api/settings/intelligence),
+  // so the CopilotKit runtime is (re)built lazily; without a key agents run in-process (SSE).
+  const stored = await db.get<{ apiKey?: string }>("system", "settings", "intelligence");
+  let storedIntelligenceKey = stored?.apiKey?.trim() || undefined;
+  const intelligenceKey = () => config.intelligenceApiKey ?? storedIntelligenceKey;
   const auth = await createAuth(db, config),
     files = new Files(db, config, auth),
     google = new GoogleAuth(db, config),
-    workspace = new WorkspaceService(db, config, files, google);
+    workspace = new WorkspaceService(db, config, files, google, {
+      intelligenceConfigured: () => Boolean(intelligenceKey()),
+    });
   const actions = new ActionService(db, {
     execute: (owner, input, connectionId, targetVersion) =>
       workspace.execute(owner, input, connectionId, targetVersion),
@@ -41,13 +47,41 @@ export async function createApp(
   const browser = new BrowserService(db, config, auth, files);
   const computer = new ComputerService(db, config, options.docker);
   const agent = new AgentService(db, config, workspace, files, actions, browser, computer);
-  const intelligence = new CopilotKitIntelligence({ apiKey: config.intelligenceApiKey });
-  const runtime = makeRuntime(config, agent, auth, intelligence);
+  type RuntimeHandle = ReturnType<typeof makeRuntime>;
+  let cloudRuntime: { key: string; handle: RuntimeHandle } | undefined;
+  let localRuntime: RuntimeHandle | undefined;
+  const runtimeFor = async (): Promise<RuntimeHandle> => {
+    const key = intelligenceKey();
+    if (!key) {
+      localRuntime ??= makeRuntime(config, agent, auth);
+      return localRuntime;
+    }
+    if (!cloudRuntime || cloudRuntime.key !== key)
+      cloudRuntime = {
+        key,
+        handle: makeRuntime(config, agent, auth, new CopilotKitIntelligence({ apiKey: key })),
+      };
+    return cloudRuntime.handle;
+  };
   const app = new Hono<{ Variables: { owner: string } }>();
   const origins = new Set([...config.allowedOrigins, new URL(config.publicUrl).origin]);
+  /**
+   * Single-origin hosting serves the app and the API from one public host, so a request
+   * whose Origin is the host it reached is the app calling its own API rather than another
+   * website. Every other origin still needs an explicit ALLOWED_ORIGINS entry.
+   */
+  const originAllowed = (origin: string, host?: string | null) => {
+    if (origins.has(origin)) return true;
+    try {
+      return Boolean(host) && new URL(origin).host === host;
+    } catch {
+      return false;
+    }
+  };
   app.use("*", async (c, next) => {
     const origin = c.req.header("origin");
-    if (origin && !origins.has(origin)) return c.json({ error: "Origin is not allowed" }, 403);
+    if (origin && !originAllowed(origin, c.req.header("host")))
+      return c.json({ error: "Origin is not allowed" }, 403);
     c.header("X-Content-Type-Options", "nosniff");
     c.header("Referrer-Policy", "no-referrer");
     c.header("Cache-Control", "no-store");
@@ -56,7 +90,7 @@ export async function createApp(
   app.use(
     "*",
     cors({
-      origin: (origin) => (origins.has(origin) ? origin : undefined),
+      origin: (origin, c) => (originAllowed(origin, c.req.header("host")) ? origin : undefined),
       allowHeaders: ["Content-Type", "Authorization"],
       allowMethods: ["GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"],
       credentials: true,
@@ -94,6 +128,7 @@ export async function createApp(
       mode: config.mode,
       agentConfigured: agentConfigured(config),
       browserConfigured: Boolean(config.workerUrl && config.workerToken),
+      intelligenceConfigured: Boolean(intelligenceKey()),
     }),
   );
   let loginWindow = 0,
@@ -134,6 +169,21 @@ export async function createApp(
         : await auth.owner(c.req.header("authorization"));
     c.set("owner", owner);
     await next();
+  });
+  app.post("/api/settings/intelligence", async (c) => {
+    const body = z.object({ apiKey: z.string().max(512) }).parse(await c.req.json());
+    const apiKey = body.apiKey.trim() || undefined;
+    if (apiKey && apiKey.length < 8)
+      throw new AppError("That key is too short to be a CopilotKit project key", 422);
+    storedIntelligenceKey = apiKey;
+    if (apiKey)
+      await db.put("system", "settings", {
+        id: "intelligence",
+        apiKey,
+        updatedAt: new Date().toISOString(),
+      });
+    else await db.remove("system", "settings", "intelligence");
+    return c.json({ ok: true, configured: Boolean(intelligenceKey()) });
   });
   app.get("/api/workspace", async (c) => {
     const [snapshot, reachable] = await Promise.all([
@@ -211,13 +261,25 @@ export async function createApp(
     });
     const main = await db.get<{ threadId: string }>(owner, "conversation-settings", "main");
     if (!main) throw new AppError("Main conversation could not be loaded", 503);
+    if (!intelligenceKey())
+      throw new AppError(
+        "Paste your CopilotKit Intelligence project key in the OpenMuse menu to enable saved conversations.",
+        503,
+      );
     try {
+      const { intelligence } = await runtimeFor();
+      if (!intelligence)
+        throw new AppError(
+          "Main conversation is unavailable. Check the Rich Threads connection and try again.",
+          502,
+        );
       await intelligence.getOrCreateThread({
         threadId: main.threadId,
         userId: owner,
         agentId: "default",
       });
-    } catch {
+    } catch (error) {
+      if (error instanceof AppError) throw error;
       throw new AppError(
         "Main conversation is unavailable. Check the Rich Threads connection and try again.",
         502,
@@ -332,7 +394,8 @@ export async function createApp(
         "Configure a model and provider API key, or a valid AG-UI endpoint, to start chat",
         503,
       );
-    const response = await runtime.fetch(c.req.raw);
+    const { handler } = await runtimeFor();
+    const response = await handler.fetch(c.req.raw);
     // Runtime 1.70 emits SSE strings; a WHATWG Response body requires byte chunks.
     const encoder = new TextEncoder();
     const body = response.body?.pipeThrough(

@@ -71,6 +71,16 @@ export default function App() {
   const [accessKey, setAccessKey] = useState("");
   const [busy, setBusy] = useState(true);
   const [error, setError] = useState("");
+  // Sample workspaces open without a key; live deployments still gate on one.
+  const [needsKey, setNeedsKey] = useState(false);
+  const checkServer = useCallback(async () => {
+    try {
+      const health = await fetch(`${API_URL}/api/health`);
+      if (health.ok) setNeedsKey((await health.json()).mode !== "sample");
+    } catch {
+      // An unreachable server is reported by the connect attempt instead.
+    }
+  }, []);
   const connect = useCallback(async (key?: string) => {
     setBusy(true);
     setError("");
@@ -85,7 +95,8 @@ export default function App() {
   }, []);
   useEffect(() => {
     void connect();
-  }, [connect]);
+    void checkServer();
+  }, [checkServer, connect]);
   return (
     <SafeAreaProvider>
       <StatusBar style="dark" />
@@ -119,19 +130,22 @@ export default function App() {
             ) : (
               <Card style={{ width: "100%" }}>
                 <ErrorNotice error={error} />
-                <Field
-                  label="Workspace access key"
-                  value={accessKey}
-                  onChangeText={setAccessKey}
-                  secureTextEntry
-                  placeholder="Required for a live workspace"
-                />
-                <Button primary onPress={() => void connect(accessKey || undefined)}>
+                {needsKey && (
+                  <Field
+                    label="Workspace access key"
+                    value={accessKey}
+                    onChangeText={setAccessKey}
+                    secureTextEntry
+                    placeholder="Required for a live workspace"
+                  />
+                )}
+                <Button primary onPress={() => void connect(needsKey ? accessKey : undefined)}>
                   Open workspace
                 </Button>
                 <Text style={[s.small, { marginTop: 15 }]}>
-                  Local workspaces open without a key. Make sure your OpenMuse server is running at{" "}
-                  {API_URL}.
+                  {needsKey
+                    ? "This workspace is protected by an access key."
+                    : "This workspace opens for anyone with the link."}
                 </Text>
               </Card>
             )}

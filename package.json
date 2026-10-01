@@ -21,6 +21,8 @@
     "build:server": "tsc -p tsconfig.build.json",
     "start": "node dist/apps/server/src/index.js",
     "build:web": "pnpm --dir apps/mobile build:web",
+    "build:preview": "node scripts/build-web.mjs && node scripts/verify-preview-build.mjs",
+    "start:preview": "node scripts/preview.mjs",
     "build:ios": "pnpm --dir apps/mobile build:ios",
     "build:android": "pnpm --dir apps/mobile build:android",
     "dev:worker": "tsx apps/server/src/worker-entry.ts",

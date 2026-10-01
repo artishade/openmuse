@@ -11,7 +11,7 @@ import {
 } from "lucide-react-native";
 import { createContext, type ReactNode, useContext, useEffect, useRef, useState } from "react";
 import { ActivityIndicator, Pressable, Text, View } from "react-native";
-import { Button, colors, ErrorNotice, Field, LinkRow, Sheet, s } from "./ui";
+import { Button, Card, colors, ErrorNotice, Field, LinkRow, Sheet, s } from "./ui";
 import { useWorkspace } from "./workspace";
 
 function newThreadId() {
@@ -283,6 +283,7 @@ export function ThreadsSheet({ onClose }: { onClose: () => void }) {
           </>
         ) : (
           <>
+            {workspace.runtime.intelligenceConfigured === false && <IntelligenceSetup />}
             <LinkRow
               icon={MessageCircle}
               title="Main chat"
@@ -324,5 +325,45 @@ export function ThreadsSheet({ onClose }: { onClose: () => void }) {
         </Button>
       </View>
     </Sheet>
+  );
+}
+
+/** Paste a CopilotKit Intelligence project key to switch the workspace to Rich Threads. */
+function IntelligenceSetup() {
+  const { api, refresh, notify } = useWorkspace();
+  const [apiKey, setApiKey] = useState("");
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState("");
+  return (
+    <Card style={{ padding: 16, gap: 10 }}>
+      <Text style={s.heading}>Connect CopilotKit Intelligence</Text>
+      <Text style={s.muted}>
+        Paste your server-only project key to enable saved conversations on every device. Create one
+        with `npx copilotkit@latest login`.
+      </Text>
+      <Field label="Project key" value={apiKey} onChangeText={setApiKey} />
+      <ErrorNotice error={error} />
+      <Button
+        primary
+        busy={busy}
+        disabled={!apiKey.trim()}
+        onPress={async () => {
+          setBusy(true);
+          setError("");
+          try {
+            await api.request("/api/settings/intelligence", { apiKey: apiKey.trim() }, "POST");
+            setApiKey("");
+            await refresh();
+            notify("CopilotKit Intelligence connected.");
+          } catch (e) {
+            setError(e instanceof Error ? e.message : String(e));
+          } finally {
+            setBusy(false);
+          }
+        }}
+      >
+        Save key
+      </Button>
+    </Card>
   );
 }
